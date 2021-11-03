@@ -247,7 +247,7 @@ async function addNewTeamMembers(
   for (const username of desiredMembers) {
     if (!existingMembers.includes(username)) {
       core.debug(`Adding ${username} to ${teamSlug}`)
-      await client.rest.teams.addOrUpdateMembershipInOrg({org, team_slug: teamSlug, username})
+      await client.rest.teams.addOrUpdateMembershipForUserInOrg({org, team_slug: teamSlug, username})
     }
   }
 }
