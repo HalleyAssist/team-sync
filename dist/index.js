@@ -1482,10 +1482,13 @@ async function synchronizeTeamData(client, org, authenticatedUser, teams, teamNa
         core.debug(JSON.stringify(desiredMembers));
         const { existingTeam, existingRepos, existingMembers, desiredRepos } = await getExistingTeamReposAndMembers(client, org, teamSlug, desiredRepoExpressions);
         if (existingTeam) {
+            core.debug(`Update team details for ${org}/${teamSlug} (${teamName})`);
+            await client.rest.teams.updateInOrg({ org, team_slug: teamSlug, name: teamName, description });
             core.debug(`Existing team members for team slug ${teamSlug}:`);
             core.debug(JSON.stringify(existingMembers));
-            await client.rest.teams.updateInOrg({ org, team_slug: teamSlug, name: teamName, description });
+            core.debug(`Removing former members`);
             await removeFormerTeamMembers(client, org, teamSlug, existingMembers, desiredMembers);
+            core.debug(`Removing former repositories`);
             await removeFormerTeamRepos(client, org, teamSlug, existingRepos, desiredRepos);
             //await removeFormerRepositories(client, org, teamSlug, )
         }
@@ -1570,7 +1573,7 @@ async function removeFormerTeamMembers(client, org, teamSlug, existingMembers, d
     for (const username of existingMembers) {
         if (!desiredMembers.includes(username)) {
             core.debug(`Removing ${username} from ${teamSlug}`);
-            await client.rest.teams.removeMembershipInOrg({ org, team_slug: teamSlug, username });
+            await client.rest.teams.removeMembershipForUserInOrg({ org, team_slug: teamSlug, username });
         }
         else {
             core.debug(`Keeping ${username} in ${teamSlug}`);
@@ -1609,14 +1612,14 @@ async function addNewTeamMembers(client, org, teamSlug, existingMembers, desired
     for (const username of desiredMembers) {
         if (!existingMembers.includes(username)) {
             core.debug(`Adding ${username} to ${teamSlug}`);
-            await client.rest.teams.addOrUpdateMembershipInOrg({ org, team_slug: teamSlug, username });
+            await client.rest.teams.addOrUpdateMembershipForUserInOrg({ org, team_slug: teamSlug, username });
         }
     }
 }
 async function createTeamWithNoMembers(client, org, teamName, teamSlug, authenticatedUser, description) {
     await client.rest.teams.create({ org, name: teamName, description, privacy: 'closed' });
     core.debug(`Removing creator (${authenticatedUser}) from ${teamSlug}`);
-    await client.teams.removeMembershipInOrg({
+    await client.rest.teams.removeMembershipForUserInOrg({
         org,
         team_slug: teamSlug,
         username: authenticatedUser
@@ -1633,15 +1636,17 @@ async function getExistingTeamReposAndMembers(client, org, teamSlug, desredRepoE
         existingTeam = teamResponse.data;
         const membersResponse = await client.rest.teams.listMembersInOrg({ org, team_slug: teamSlug });
         existingMembers = membersResponse.data.map((m) => m.login);
-        const reposResponse = await client.rest.teams.listReposInOrg({ org, team_slug: teamSlug });
-        existingRepos = reposResponse.data.map((r) => ({ name: r.full_name, permission: permissionTranslate(r.permissions) }));
+        const reposResponse = await client.paginate(client.rest.teams.listReposInOrg, { org, team_slug: teamSlug });
+        existingRepos = reposResponse.map((r) => ({ name: r.full_name, permission: permissionTranslate(r.permissions) }));
         const orgRepos = await client.paginate(client.rest.repos.listForOrg, { org });
         core.debug(`Got ${orgRepos.length} repos`);
         for (const r of orgRepos) {
+            let ignore = false;
             let ff = desredRepoExpressions.filter(a => {
                 if (a.regex_ignore) {
                     if (a.regex_ignore.test(r.full_name)) {
-                        return false;
+                        ignore = true;
+                        return true;
                     }
                 }
                 if (a.name == r.full_name)
@@ -1653,8 +1658,11 @@ async function getExistingTeamReposAndMembers(client, org, teamSlug, desredRepoE
                 }
                 return false;
             });
-            for (const f of ff) {
-                desiredRepos.push({ name: r.full_name, permission: f.permission });
+            if (!ignore) {
+                for (const f of ff) {
+                    desiredRepos.push({ name: r.full_name, permission: f.permission });
+                    break;
+                }
             }
         }
     }

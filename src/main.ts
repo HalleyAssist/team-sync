@@ -81,11 +81,14 @@ async function synchronizeTeamData(
     const {existingTeam, existingRepos, existingMembers, desiredRepos} = await getExistingTeamReposAndMembers(client, org, teamSlug, desiredRepoExpressions)
 
     if (existingTeam) {
+      core.debug(`Update team details for ${org}/${teamSlug} (${teamName})`)
+      await client.rest.teams.updateInOrg({org, team_slug: teamSlug, name: teamName, description})
+
       core.debug(`Existing team members for team slug ${teamSlug}:`)
       core.debug(JSON.stringify(existingMembers))
-
-      await client.rest.teams.updateInOrg({org, team_slug: teamSlug, name: teamName, description})
+      core.debug(`Removing former members`)
       await removeFormerTeamMembers(client, org, teamSlug, existingMembers, desiredMembers)
+      core.debug(`Removing former repositories`)
       await removeFormerTeamRepos(client, org, teamSlug, existingRepos, desiredRepos)
       //await removeFormerRepositories(client, org, teamSlug, )
     } else {
@@ -190,7 +193,7 @@ async function removeFormerTeamMembers(
   for (const username of existingMembers) {
     if (!desiredMembers.includes(username)) {
       core.debug(`Removing ${username} from ${teamSlug}`)
-      await client.rest.teams.removeMembershipInOrg({org, team_slug: teamSlug, username})
+      await client.rest.teams.removeMembershipForUserInOrg({org, team_slug: teamSlug, username})
     } else {
       core.debug(`Keeping ${username} in ${teamSlug}`)
     }
@@ -264,7 +267,7 @@ async function createTeamWithNoMembers(
 
   core.debug(`Removing creator (${authenticatedUser}) from ${teamSlug}`)
 
-  await client.teams.removeMembershipInOrg({
+  await client.rest.teams.removeMembershipForUserInOrg({
     org,
     team_slug: teamSlug,
     username: authenticatedUser
@@ -298,17 +301,19 @@ async function getExistingTeamReposAndMembers(
 
     existingMembers = membersResponse.data.map((m : any) => m.login)
 
-    const reposResponse = await client.rest.teams.listReposInOrg({org, team_slug: teamSlug})
+    const reposResponse = await client.paginate(client.rest.teams.listReposInOrg, {org, team_slug: teamSlug})
 
-    existingRepos = reposResponse.data.map((r : any) => ({name: r.full_name, permission: permissionTranslate(r.permissions)}))
+    existingRepos = reposResponse.map((r : any) => ({name: r.full_name, permission: permissionTranslate(r.permissions)}))
 
     const orgRepos = await client.paginate(client.rest.repos.listForOrg, {org})
     core.debug(`Got ${orgRepos.length} repos`)
     for(const r of orgRepos){
+      let ignore = false
       let ff = desredRepoExpressions.filter(a=>{
         if(a.regex_ignore){
           if(a.regex_ignore.test(r.full_name)){
-            return false
+            ignore = true
+            return true
           }
         }
         if(a.name == r.full_name) return true;
@@ -317,10 +322,13 @@ async function getExistingTeamReposAndMembers(
             return true
           }
         }
-        return false;
+        return false
       })
-      for(const f of ff){
-        desiredRepos.push({name: r.full_name, permission: f.permission})
+      if(!ignore){
+        for(const f of ff){
+          desiredRepos.push({name: r.full_name, permission: f.permission})
+          break
+        }
       }
     }
 
